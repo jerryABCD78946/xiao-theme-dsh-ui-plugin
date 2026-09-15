@@ -153,6 +153,11 @@ const STR: Record<string, { zh: string; en: string }> = {
   confirmDelete: { zh: '确认删除', en: 'Confirm delete' },
   builtinSuffix: { zh: '（内置）', en: ' (built-in)' },
   activeSuffix: { zh: '（当前）', en: ' (active)' },
+  themeListTitle: { zh: '主题列表', en: 'Theme list' },
+  activeTag: { zh: '当前', en: 'Active' },
+  builtinTag: { zh: '内置', en: 'Built-in' },
+  useTheme: { zh: '使用', en: 'Use' },
+  useThemeHint: { zh: '切换为当前主题', en: 'Switch to this theme' },
   importTheme: { zh: '导入主题', en: 'Import theme' },
   importThemePrefix: { zh: '导入主题 ', en: 'Imported theme ' },
   refresh: { zh: '刷新', en: 'Refresh' },
@@ -1765,9 +1770,10 @@ function ThemeManager({ store }: { store: ConfigStore }): React.ReactElement {
   );
   const themeRows = themeList.map((t2) => {
     const editing = editingId === t2.id;
+    // 紧凑行：名称占满剩余宽度并省略号，右侧只放「当前 / 内置」小胶囊 + 小号操作按钮。
     const nameContent = editing
       ? React.createElement('input', {
-          className: 'xiao-settings-input',
+          className: 'xiao-settings-input xiao-theme-rename',
           value: editingName,
           autoFocus: true,
           onChange: (e: React.ChangeEvent<HTMLInputElement>) => setEditingName(e.target.value),
@@ -1780,17 +1786,41 @@ function ThemeManager({ store }: { store: ConfigStore }): React.ReactElement {
             }
           },
         })
-      : React.createElement('span', { className: 'xiao-settings-name' }, t2.name + (t2.active ? t('activeSuffix') : ''));
+      : React.createElement(
+          'span',
+          { className: 'xiao-theme-namewrap' },
+          React.createElement('span', { className: 'xiao-theme-name', title: t2.name }, t2.name),
+          t2.active
+            ? React.createElement('span', { className: 'xiao-theme-tag xiao-theme-tag-active' }, t('activeTag'))
+            : null,
+          t2.builtin
+            ? React.createElement('span', { className: 'xiao-theme-tag', title: t('builtinNotDelete') }, t('builtinTag'))
+            : null,
+        );
     return React.createElement(
       'div',
-      { className: 'xiao-settings-row', key: t2.id },
+      { className: 'xiao-theme-row' + (t2.active ? ' xiao-theme-row-active' : ''), key: t2.id },
       nameContent,
+      // 行内切换：非当前主题才显示，且编辑名称时不渲染（避免 blur-rename 与 activate 并发）。
+      editing || t2.active
+        ? null
+        : React.createElement(
+            'button',
+            {
+              className: 'xiao-settings-btn xiao-theme-act xiao-theme-act-primary',
+              type: 'button',
+              disabled: busy,
+              title: t('useThemeHint'),
+              onClick: () => void onActivate(t2.id),
+            },
+            t('useTheme'),
+          ),
       editing
         ? null
         : React.createElement(
             'button',
             {
-              className: 'xiao-settings-btn',
+              className: 'xiao-settings-btn xiao-theme-act',
               type: 'button',
               disabled: busy,
               onClick: () => {
@@ -1800,13 +1830,17 @@ function ThemeManager({ store }: { store: ConfigStore }): React.ReactElement {
             },
             t('rename'),
           ),
-      React.createElement('button', { className: 'xiao-settings-btn', type: 'button', onClick: () => void onExport(t2.id) }, t('exportTheme')),
+      React.createElement(
+        'button',
+        { className: 'xiao-settings-btn xiao-theme-act', type: 'button', onClick: () => void onExport(t2.id) },
+        t('exportTheme'),
+      ),
       t2.builtin
-        ? React.createElement('button', { className: 'xiao-settings-btn', type: 'button', disabled: true, title: t('builtinNotDelete') }, t('deleteTheme'))
+        ? null
         : React.createElement(
             'button',
             {
-              className: 'xiao-settings-btn' + (pendingDeleteId === t2.id ? ' xiao-settings-danger' : ''),
+              className: 'xiao-settings-btn xiao-theme-act' + (pendingDeleteId === t2.id ? ' xiao-settings-danger' : ''),
               type: 'button',
               disabled: busy,
               onClick: () => void onDelete(t2.id),
@@ -1876,7 +1910,18 @@ function ThemeManager({ store }: { store: ConfigStore }): React.ReactElement {
           ),
         ]
       : []),
-    ...themeRows,
+    ...(themeList.length > 0
+      ? [
+          React.createElement(
+            'div',
+            { className: 'xiao-theme-list-head' },
+            React.createElement('span', { className: 'xiao-theme-list-title' }, t('themeListTitle')),
+            React.createElement('span', { className: 'xiao-theme-list-title' }, String(themeList.length)),
+          ),
+          // 自带滚动容器：块高与主题数量解耦（max-height 固定上限），主题多时在框内滚动，不顶长设置页。
+          React.createElement('div', { className: 'xiao-theme-list' }, ...themeRows),
+        ]
+      : []),
     React.createElement(
       'div',
       { className: 'xiao-settings-row' },
@@ -2906,7 +2951,21 @@ const XIAO_CSS: string[] = [
   '.xiao-settings-color::-webkit-color-swatch{border:none;border-radius:50%;}',
   '.xiao-settings-btn{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border-radius:8px;padding:7px 14px;font-size:13px;cursor:pointer;}',
   '.xiao-settings-btn:hover{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary);}',
-  '.xiao-settings-name{font-size:14px;color:var(--dsw-alias-label-primary);flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
+  // —— 主题管理列表：自带滚动容器，块高与主题数量解耦 ——
+  '.xiao-theme-list-head{display:flex;align-items:center;justify-content:space-between;gap:8px;}',
+  '.xiao-theme-list-title{font-size:12px;color:var(--dsw-alias-label-secondary);}',
+  // 固定上限 min(40vh,280px)：宿主设置面板本身是 min(800px,100vh-48px)，用 px 上限 + vh 兜底，跨 DSH 版本都稳。
+  '.xiao-theme-list{display:flex;flex-direction:column;gap:4px;max-height:min(40vh,280px);overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:6px;background:var(--dsw-alias-bg-layer-1);}',
+  '.xiao-theme-row{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:8px;}',
+  '.xiao-theme-row:hover{background:var(--dsw-alias-bg-layer-2);}',
+  '.xiao-theme-row-active{background:var(--dsw-alias-bg-layer-2);box-shadow:inset 2px 0 0 var(--dsw-alias-brand-primary);}',
+  '.xiao-theme-namewrap{display:flex;align-items:center;gap:6px;flex:1;min-width:0;}',
+  '.xiao-theme-name{min-width:0;font-size:13px;color:var(--dsw-alias-label-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
+  '.xiao-theme-tag{flex:none;font-size:11px;color:var(--dsw-alias-label-secondary);border:1px solid var(--dsw-alias-border-l2);border-radius:999px;padding:1px 8px;}',
+  '.xiao-theme-tag-active{color:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary);}',
+  '.xiao-theme-act{padding:3px 10px;font-size:12px;line-height:1.3;flex:none;}',
+  '.xiao-theme-act-primary{color:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary);}',
+  '.xiao-theme-rename{flex:1;min-width:0;}',
   '.xiao-settings-danger{border-color:var(--dsw-alias-state-error-primary)!important;color:var(--dsw-alias-state-error-primary)!important;}',
   '.xiao-settings-warn{font-size:12px;color:var(--dsw-alias-state-warn-primary);line-height:1.6;padding:2px 0;}',
   '.xiao-settings-hint{font-size:12px;color:var(--dsw-alias-label-secondary);line-height:1.6;}',

@@ -1,15 +1,76 @@
-# 维护记录：多背景轮播（multi-background rotation）
+# 维护记录（Developer / Agent maintenance notes）
 
-> 本文是**开发者 / Agent 维护文档**，只记录本轮「多背景」这一次改动及其坑，供后续 agent 接手。
-> 历史改动看 `git log`；本文不重复 README 里的用户说明。
+> 本文是**开发者 / Agent 维护文档**：按轮次记录每次改动及其坑，供后续 agent 接手。
+> **最新一轮在最上面**；历史改动看 `git log`；README 只写用户可见的说明。
 
-- 时间：本轮改动（版本仍为 `0.10.1`，未 bump）
+---
+
+## 本轮：主题管理列表自带滚动（版本 0.11.0，未 bump）
+
+- 状态：实现完成，`pnpm run check` 通过，`pnpm test` 全绿（Host 11 / Client 8）
+- 改动面：**纯 Client**（`src/client.ts`）。Host、数据模型、主题路由全部未动 → `pnpm run build` 后**刷新页面**即可，不用重启 DSH。
+
+### 问题
+
+`ThemeManager` 把每个主题渲染成一个 `xiao-settings-row` 直接平铺在 `.xiao-settings-section` 里，section 与行都不限高，
+所以这一块高度 = O(主题数)（约 43px / 主题）。真正在滚动的是 DSH 设置模态框的内容区
+（`.VOzbGW_options{flex:1;min-height:0;overflow-y:auto}`，面板固定 `height:min(800px,100vh-48px)`）。
+主题一多，主题管理就把整页顶长，下面的设置要滚很久才看得到。
+
+### 改法（方案 A：自带滚动容器 + 紧凑行）
+
+- 主题行外套 `.xiao-theme-list`：`max-height:min(40vh,280px)` + `overflow-y:auto` + `overflow-x:hidden` + `overscroll-behavior:contain`。
+  块高与主题数解耦：主题少时不出滚动条，多了就在框内滚动，不顶长设置页。
+- 列表上方 `.xiao-theme-list-head`：`主题列表` + 数量（`.xiao-theme-list-title`）。
+- 行改紧凑：`.xiao-theme-row`（hover / 当前态底色；当前态左侧 `inset` 品牌色条）+ `.xiao-theme-namewrap` / `.xiao-theme-name`（省略号）
+  + `当前` / `内置` 小胶囊（`.xiao-theme-tag` / `.xiao-theme-tag-active`）+ 小号操作按钮（`.xiao-theme-act`）。
+- 内置主题不再渲染那个禁用的「删除」按钮，改为「内置」胶囊，`title` 复用 `builtinNotDelete` 提示。
+- 新增 STR：`themeListTitle` / `activeTag` / `builtinTag`。
+- 删除只被旧主题行使用的 `.xiao-settings-name` 规则。
+- **交互语义零变化**：顶部 `<select>` 继续负责切换；重命名（行内编辑）、导出、删除（两步确认）、导入、刷新、恢复默认都不变。
+
+### 追加：行内「使用」切换按钮
+
+- 列表每行的**非当前主题**多一个「使用」按钮（`.xiao-theme-act-primary`，始终品牌色），点击调用既有 `onActivate` → `POST /xiao-theme/themes-activate`。
+- 当前主题行不渲染该按钮；**编辑名称时也不渲染**（避免 blur 触发 rename 与 activate 并发）。
+- 顶部 `<select>` 保留：两处都能切换 —— 选择器适合大 N 时键入跳转，行内按钮适合就近操作。
+- 新增 STR：`useTheme`（按钮文字）、`useThemeHint`（按钮 title）。
+- 纯插件内部渲染 + 复用既有路由，不新增任何 DSH 依赖 → 与 DSH 版本无关。
+
+### 兼容性（为什么与 DSH 版本无关）
+
+- 主题数据 / 路由都是插件自己的（`~/.dsh/xiao-theme.json` + `/xiao-theme/themes*`），DSH 不参与。
+- 滚动容器只用标准 CSS（`max-height` / `overflow-y`），不选 DSH 哈希类名；**不再依赖宿主 `.options` 是否滚动**，比改前更抗版本变化。
+- 限高写成 `min(40vh,280px)`：宿主面板本身是 `min(800px,100vh-48px)`，vh 兜底 + px 上限，宿主是模态框 / 整页 / 侧栏都稳。
+- `settings.section` 注册 + 语言重注册、`--dsw-alias-*` token 用法均未改。
+
+### 验证
+
+```
+pnpm run check   # tsc --noEmit + scripts/check-dsh.mjs
+pnpm test        # build + host/client 单测
+```
+
+- 本机插件以 `link:`（junction）装到 `~/.dsh/profiles/web`，`lib/client.js` 构建后刷新页面即生效。
+- `ThemeManager` 仍无 DOM 单测（项目测试刻意零第三方依赖）；本次未新增依赖，测试面不变。
+
+### 关键符号
+
+| 位置 | 符号 |
+| --- | --- |
+| `src/client.ts` | `ThemeManager`、STR `themeListTitle` / `activeTag` / `builtinTag`、`.xiao-theme-list`、`.xiao-theme-list-head`、`.xiao-theme-list-title`、`.xiao-theme-row` / `-active`、`.xiao-theme-namewrap`、`.xiao-theme-name`、`.xiao-theme-tag` / `-active`、`.xiao-theme-act`、`.xiao-theme-rename` |
+
+---
+
+## 上一轮：多背景轮播（multi-background rotation）
+
+- 时间：上一轮改动（版本仍为 `0.10.1`，未 bump）
 - 状态：实现完成，`pnpm run check` 通过，`pnpm test` 全绿（Host 11 / Client 8）
 - **唯一未在真机确认的点：负 z-index 图层与根框架 `backdrop-filter` 的配合** —— 见「坑 8」
 
 ---
 
-## 1. 需求语义（最终确认版）
+### 1. 需求语义（最终确认版）
 
 用户原话要点，实现时不要自行改语义：
 
@@ -24,7 +85,7 @@
 
 ---
 
-## 2. 数据模型与兼容策略
+### 2. 数据模型与兼容策略
 
 新增字段（`src/config.ts`）：
 
@@ -45,7 +106,7 @@
 
 ---
 
-## 3. Host 侧改动（`src/index.ts`）
+### 3. Host 侧改动（`src/index.ts`）
 
 - `normalizeBackgroundList(raw)`（**已导出，供单测**）：只保留 `{path: 非空字符串, dynamic: boolean}`，按 path 去重，非法项丢弃，绝不返回外部引用。
 - `normalizeConfig`：合成 + 镜像（见上）。`backgroundInterval` 走 clamp。
@@ -56,7 +117,7 @@
 
 ---
 
-## 4. Client 侧改动（`src/client.ts`）
+### 4. Client 侧改动（`src/client.ts`）
 
 分层：
 
@@ -81,7 +142,7 @@
 
 ---
 
-## 5. 设置页
+### 5. 设置页
 
 - `BackgroundListEditor`：列表 ≥ 2 项时显示行（缩略图 + 序号 + 文件名 + 动态/静态标签 + 上移/下移/移除）；始终有一个「从已上传文件添加」入口。
 - `UploadPicker` 新增 `mode: 'replace' | 'add'`：
@@ -91,7 +152,7 @@
 
 ---
 
-## 6. 坑（重点，改之前先读）
+### 6. 坑（重点，改之前先读）
 
 1. **绝不要用"写配置"来驱动轮播。**
    每切一次就写 `xiao-theme.json` = 每 N 秒一次磁盘写 + 触发全部订阅者。正确做法：客户端只改 URL（`/xiao-bg?i=&p=&v=`），配置只在用户编辑时写。
@@ -144,7 +205,7 @@
 
 ---
 
-## 7. 调试提示
+### 7. 调试提示
 
 - 轮播被意外重启？打断点看 `rotation.signature` 是否变化（只有 list / interval 变化才应该重建）。
 - 异步回调（canplay / ended / 定时器）失效？看 `rotation.token` 是否已递增（`stopRotation` / `startRotation` 会 +1）。
@@ -153,7 +214,7 @@
 
 ---
 
-## 8. 验证
+### 8. 验证
 
 ```
 pnpm run check   # tsc --noEmit + scripts/check-dsh.mjs（dsh 契约）
@@ -169,7 +230,7 @@ pnpm test        # 先 build，再跑 test/host.test.mjs + test/client.test.mjs
 
 ---
 
-## 9. 未做 / 后续可做
+### 9. 未做 / 后续可做
 
 - 真机确认「坑 8」（磨砂面板能否采样到负 z-index 图层）。
 - 渐变时长是常量；若用户要求可调，加 `backgroundFadeMs` 字段 + 钳制（建议 ≤ 间隔的 40%）。
@@ -178,7 +239,7 @@ pnpm test        # 先 build，再跑 test/host.test.mjs + test/client.test.mjs
 
 ---
 
-## 10. 关键符号索引
+### 10. 关键符号索引
 
 | 位置 | 符号 |
 | --- | --- |
