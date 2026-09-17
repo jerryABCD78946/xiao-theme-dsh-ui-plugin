@@ -56,7 +56,8 @@ const UPLOAD_DIR =
 const AGENT_PRESET_ROOT = join(DSH_HOME, '.agent-presets');
 const ROLEPLAY_PRESET_ID = 'xiao-roleplay'; // 目录名，须匹配 [a-z0-9][a-z0-9-]*
 const ROLEPLAY_PRESET_DIR = join(AGENT_PRESET_ROOT, ROLEPLAY_PRESET_ID);
-const ROLEPLAY_PRESET_NAME = '角色空间（娱乐）'; // DSH 新会话选择器里显示的名字
+// DSH 新会话选择器里显示的名字：双语，中英界面都能对上（description 同样是中英双语）。
+const ROLEPLAY_PRESET_NAME = '角色空间（娱乐） / Roleplay (entertainment)';
 const PLUGIN_ROOT = fileURLToPath(new URL('..', import.meta.url)); // 插件根目录（lib 的上一级）
 const MAX_UPLOAD_AVATAR = 20 * 1024 * 1024; // 头像/图片保持原上限（<img>，无需大文件）
 const MAX_UPLOAD_BG = 200 * 1024 * 1024; // 背景（含视频）放宽：流式落盘后内存不再是瓶颈
@@ -112,8 +113,38 @@ interface ThemeEntry {
 
 /** 主题管理持久化形态（~/.dsh/xiao-theme.json）。 */
 interface ThemeStore {
+  /** 持久化格式版本：缺失视为 v1；每次写回都会盖上当前版本。 */
+  schemaVersion?: number;
   activeThemeId: string;
   themes: Record<string, ThemeEntry>;
+}
+
+/**
+ * 持久化格式的 schema 版本。将来做破坏性结构变更时 +1，并在 STORE_MIGRATIONS 里补一条迁移。
+ * 旧文件没有该字段 → 按 v1 处理。
+ */
+const SCHEMA_VERSION = 2;
+
+/**
+ * 版本迁移表：key = 起始版本，value = 升到 key+1 的迁移函数。
+ * v1 → v2 无结构变化——旧字段（backgroundOpacity / backgroundDarkOpacity）由 normalizeConfig
+ * 逐字段兜底，这里只把版本号推上去，为将来真正的结构迁移留一个显式入口。
+ */
+const STORE_MIGRATIONS: Record<number, (store: ThemeStore) => ThemeStore> = {
+  1: (store) => store,
+};
+
+/** 把存储迁移到当前 schema 版本（缺失版本号按 v1 处理），并原地补上版本号。 */
+function migrateThemeStore(store: ThemeStore): ThemeStore {
+  let version =
+    typeof store.schemaVersion === 'number' && Number.isFinite(store.schemaVersion) ? store.schemaVersion : 1;
+  while (version < SCHEMA_VERSION) {
+    const migrate = STORE_MIGRATIONS[version];
+    if (migrate) store = migrate(store);
+    version += 1;
+  }
+  store.schemaVersion = SCHEMA_VERSION;
+  return store;
 }
 
 const MIME_BY_EXT: Record<string, string> = {
@@ -130,7 +161,7 @@ const MIME_BY_EXT: Record<string, string> = {
 };
 
 /** 把任意配置对象规范化为合法 XiaoConfig（逐字段校验 + 兜底；含旧字段迁移 backgroundOpacity/… -> panelOpacity）。 */
-function normalizeConfig(parsed: Record<string, unknown>): XiaoConfig {
+export function normalizeConfig(parsed: Record<string, unknown>): XiaoConfig {
   const clamp = (value: unknown, min: number, max: number, fallback: number): number =>
     typeof value === 'number' && Number.isFinite(value)
       ? Math.min(max, Math.max(min, value))
@@ -241,8 +272,34 @@ function coerceThemeStore(value: ThemeStore): ThemeStore {
   return value;
 }
 
+/**
+ * 主题存储的进程内缓存（纯优化，不改变对外语义）：
+ * 媒体路由（/xiao-bg、/xiao-avatar.png）在每个 Range 请求上都会 readConfig()，视频播放会产生
+ * 成百上千次请求，原先每次都读盘 + JSON.parse。这里以「文件 mtime + size」为指纹缓存已解析结果：
+ * 指纹未变时直接复用（克隆一份交给调用方，避免调用方原地修改污染缓存）；指纹变化（含用户手工编辑
+ * 该文件）、文件缺失、或任何一次写入之后，都退回真实读盘，因此结果与逐次读盘完全一致。
+ */
+let themeStoreCache: { mtimeMs: number; size: number; value: ThemeStore } | null = null;
+
 /** 读取主题存储：新格式直接规整；旧裸 XiaoConfig 自动迁移为默认主题。 */
 async function readThemeStore(): Promise<ThemeStore> {
+  let fingerprint: { mtimeMs: number; size: number } | null = null;
+  try {
+    const st = await stat(CONFIG_PATH);
+    fingerprint = { mtimeMs: st.mtimeMs, size: st.size };
+  } catch {
+    fingerprint = null;
+  }
+  // 快速路径：文件未变 → 复用缓存（克隆，保证调用方拿到独立副本，可原地修改后写回）。
+  const cached = themeStoreCache;
+  if (
+    fingerprint !== null &&
+    cached !== null &&
+    cached.mtimeMs === fingerprint.mtimeMs &&
+    cached.size === fingerprint.size
+  ) {
+    return structuredClone(cached.value);
+  }
   let value: unknown;
   try {
     const text = await readFile(CONFIG_PATH, 'utf8');
@@ -250,24 +307,36 @@ async function readThemeStore(): Promise<ThemeStore> {
   } catch {
     value = undefined;
   }
-  if (isThemeStoreShape(value)) return coerceThemeStore(value);
-  // 旧版单配置迁移：成为「魈」默认主题的配置。
-  const raw =
-    value !== null && typeof value === 'object' && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
-      : {};
-  return {
-    activeThemeId: DEFAULT_THEME_ID,
-    themes: {
-      [DEFAULT_THEME_ID]: { name: DEFAULT_THEME_NAME, builtin: true, config: normalizeConfig(raw) },
-    },
-  };
+  let store: ThemeStore;
+  if (isThemeStoreShape(value)) {
+    store = coerceThemeStore(value);
+  } else {
+    // 旧版单配置迁移：成为「魈」默认主题的配置。
+    const raw =
+      value !== null && typeof value === 'object' && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : {};
+    store = {
+      activeThemeId: DEFAULT_THEME_ID,
+      themes: {
+        [DEFAULT_THEME_ID]: { name: DEFAULT_THEME_NAME, builtin: true, config: normalizeConfig(raw) },
+      },
+    };
+  }
+  store = migrateThemeStore(store);
+  // 只缓存「确实读到了文件」的结果；文件缺失/损坏时的兜底默认值不缓存，保持逐次读盘的回落语义。
+  themeStoreCache =
+    value !== undefined && fingerprint !== null
+      ? { mtimeMs: fingerprint.mtimeMs, size: fingerprint.size, value: structuredClone(store) }
+      : null;
+  return store;
 }
 
-/** 原子写回主题存储（确保目录存在）。 */
+/** 原子写回主题存储（确保目录存在）。写回时盖上当前 schema 版本；随后失效缓存，下一次读取仍从磁盘读出真实内容。 */
 async function writeThemeStore(store: ThemeStore): Promise<void> {
   await mkdir(dirname(CONFIG_PATH), { recursive: true });
-  await writeFile(CONFIG_PATH, JSON.stringify(store, null, 2), 'utf8');
+  await writeFile(CONFIG_PATH, JSON.stringify({ ...store, schemaVersion: SCHEMA_VERSION }, null, 2), 'utf8');
+  themeStoreCache = null;
 }
 
 /** 读取「当前主题」的配置（文件缺失或损坏时回落默认值）。 */
@@ -285,22 +354,91 @@ async function writeConfig(next: XiaoConfig): Promise<void> {
   await writeThemeStore(store);
 }
 
-/** 读取并解析 JSON 请求体（空体返回空对象）。 */
+/** JSON 请求体上限：配置 / 主题导入都是小 JSON，4MB 足够；超大 body 直接拒绝，避免撑爆内存。 */
+const JSON_BODY_MAX = 4 * 1024 * 1024;
+
+/**
+ * 跨源守卫（纯加固，不改变同源使用）：仅当请求显式携带 Origin 且其 authority 与 Host 不一致时判为跨源。
+ * 不带 Origin 的请求（curl、同源 GET、部分浏览器）一律放行——保持既有行为。
+ * 这不是替代 CSRF token，而是挡住「本地其它页面直接 POST 改设置 / 触发本机动作」。
+ */
+function isCrossOrigin(req: IncomingMessage): boolean {
+  const origin = String(req.headers.origin ?? '').trim();
+  if (origin === '') return false; // 无 Origin：放行（保持旧行为）
+  if (origin === 'null') return true; // sandbox iframe / file:// 等：视为跨源
+  const host = String(req.headers.host ?? '').trim();
+  if (host === '') return false; // 无 Host：无法判断，放行（保持旧行为）
+  try {
+    return new URL(origin).host.toLowerCase() !== host.toLowerCase();
+  } catch {
+    return true; // 无法解析的 Origin：视为不可信
+  }
+}
+
+/**
+ * 读取并解析 JSON 请求体（空体返回空对象）。
+ * 加固：① 带 body 时只接受 application/json——跨源「简单请求」无法携带该类型，会被浏览器预检挡住；
+ * ② body 有大小上限。同源设置页发的就是 application/json，行为不变；空体请求照旧返回 {}。
+ */
 function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
+    if (isCrossOrigin(req)) {
+      reject(new Error('cross-origin request rejected'));
+      return;
+    }
+    const contentType = String(req.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase();
+    const declaredLength = Number(req.headers['content-length'] ?? '0');
+    const hasBody =
+      (Number.isFinite(declaredLength) && declaredLength > 0) ||
+      typeof req.headers['transfer-encoding'] === 'string';
+    if (hasBody && contentType !== 'application/json') {
+      reject(new Error('unsupported content type'));
+      return;
+    }
+    if (Number.isFinite(declaredLength) && declaredLength > JSON_BODY_MAX) {
+      reject(new Error('request body too large'));
+      return;
+    }
     let raw = '';
-    req.setEncoding('utf8');
-    req.on('data', (chunk) => {
-      raw += String(chunk);
-    });
-    req.on('end', () => {
+    let size = 0;
+    let settled = false;
+    function cleanup(): void {
+      req.removeListener('data', onData);
+      req.removeListener('end', onEnd);
+      req.removeListener('error', onError);
+    }
+    function onData(chunk: string): void {
+      if (settled) return;
+      size += Buffer.byteLength(chunk, 'utf8');
+      if (size > JSON_BODY_MAX) {
+        settled = true;
+        cleanup();
+        req.resume(); // 丢弃剩余 body，保证连接不被挂住
+        reject(new Error('request body too large'));
+        return;
+      }
+      raw += chunk;
+    }
+    function onEnd(): void {
+      if (settled) return;
+      settled = true;
+      cleanup();
       try {
         resolve(raw.length === 0 ? {} : (JSON.parse(raw) as Record<string, unknown>));
       } catch (error) {
         reject(error);
       }
-    });
-    req.on('error', reject);
+    }
+    function onError(error: unknown): void {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error instanceof Error ? error : new Error('request error'));
+    }
+    req.setEncoding('utf8');
+    req.on('data', onData);
+    req.on('end', onEnd);
+    req.on('error', onError);
   });
 }
 
@@ -372,7 +510,7 @@ function streamUpload(
 }
 
 /** 校验视频容器签名与扩展名是否匹配（防止把 .mkv 改名成 .mp4 等）。仅校验视频；图片保持宽松。 */
-function videoFormatMatches(ext: string, header: Buffer): boolean {
+export function videoFormatMatches(ext: string, header: Buffer): boolean {
   if (header.length < 12) return false;
   if (/^\.mp4$/i.test(ext)) return header.toString('latin1', 4, 8) === 'ftyp';
   if (/^\.mov$/i.test(ext) || /^\.m4v$/i.test(ext)) {
@@ -400,6 +538,10 @@ const HOST_ERR = {
   themeNotFound: { zh: '未找到主题', en: 'Theme not found' },
   defaultNotDeletable: { zh: '默认主题不可删除', en: 'The default theme cannot be deleted' },
   configRequired: { zh: '导入数据缺少 config', en: 'Import data is missing config' },
+  themeVersionTooNew: {
+    zh: '该主题文件由更新版本的插件生成，请先升级插件再导入',
+    en: 'This theme file was created by a newer plugin version; update the plugin before importing',
+  },
   emptyUpload: { zh: '上传内容为空', en: 'Empty upload' },
   fileTooLarge: { zh: '文件过大', en: 'File too large' },
   unsupportedFormat: {
@@ -408,6 +550,9 @@ const HOST_ERR = {
   },
   formatMismatch: { zh: '文件格式与扩展名不匹配', en: 'File format does not match its extension' },
   uploadAborted: { zh: '上传已中断', en: 'Upload aborted' },
+  unsupportedContentType: { zh: '请求格式不受支持', en: 'Unsupported request content type' },
+  bodyTooLarge: { zh: '请求内容过大', en: 'Request body too large' },
+  crossOrigin: { zh: '已拒绝跨源请求', en: 'Cross-origin request rejected' },
 } as const;
 
 /** 抛出型错误：已知的转成对应语言文案（如文件过大），系统错误原样保留。 */
@@ -422,7 +567,17 @@ function requestError(req: IncomingMessage, error: unknown): string {
   if (msg === 'unsupported format') return HOST_ERR.unsupportedFormat[lang];
   if (msg === 'format mismatch') return HOST_ERR.formatMismatch[lang];
   if (msg === 'upload aborted') return HOST_ERR.uploadAborted[lang];
+  if (msg === 'unsupported content type') return HOST_ERR.unsupportedContentType[lang];
+  if (msg === 'request body too large') return HOST_ERR.bodyTooLarge[lang];
+  if (msg === 'cross-origin request rejected') return HOST_ERR.crossOrigin[lang];
   return msg;
+}
+
+/** 变更类路由的同源守卫：跨源请求直接 403；无 Origin 的请求放行（见 isCrossOrigin）。 */
+function rejectIfCrossOrigin(req: IncomingMessage, res: ServerResponse): boolean {
+  if (!isCrossOrigin(req)) return false;
+  sendJson(res, 403, { error: HOST_ERR.crossOrigin[langFromReq(req)] });
+  return true;
 }
 
 /**
@@ -442,7 +597,7 @@ function contentTypeFor(pathValue: string): string {
 }
 
 /** 解析 HTTP Range 头（bytes=start-end / bytes=start- / bytes=-suffix）；非法或不可满足返回 null（按完整文件返回）。 */
-function parseRange(range: string | undefined, size: number): { start: number; end: number } | null {
+export function parseRange(range: string | undefined, size: number): { start: number; end: number } | null {
   if (!range || size <= 0) return null;
   const m = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
   if (!m) return null;
@@ -560,7 +715,7 @@ function roleplayPersonaText(config: XiaoConfig): string {
  * 用显式缩进指示符（`|2-`）配合固定的 6 空格内容缩进，所以「首行缩进即块缩进」的自动探测
  * 不再生效：换行、冒号、引号、井号、前导空格都能原样保留，既不转义也不可能撑破 YAML。
  */
-function yamlLiteralBlock(text: string, indent: string): string {
+export function yamlLiteralBlock(text: string, indent: string): string {
   const clean = text
     .replace(/\r\n?/g, '\n')
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '');
@@ -777,7 +932,7 @@ function requestedUploadExt(req: IncomingMessage): string {
  * 仅识别 GIF87a/GIF89a，并统计图形控制扩展（GCE，0x21 0xF9 0x04）数量：
  * 动图必然 ≥2 个（每帧一个），静态/单帧 GIF 至多 1 个；非 GIF 直接 false。
  */
-function isAnimatedGif(buf: Buffer): boolean {
+export function isAnimatedGif(buf: Buffer): boolean {
   if (buf.length < 6) return false;
   if (buf.toString('latin1', 0, 3) !== 'GIF') return false;
   let gce = 0;
@@ -977,6 +1132,7 @@ export function apply(ctx: HostCtx): void {
               return;
             }
             if (req.method === 'POST') {
+              if (rejectIfCrossOrigin(req, res)) return;
               try {
                 const body = await readJsonBody(req);
                 const current = await readConfig();
@@ -1095,6 +1251,7 @@ export function apply(ctx: HostCtx): void {
                 response.end();
                 return;
               }
+              if (rejectIfCrossOrigin(request, response)) return;
               try {
                 // kind 参数区分上传用途：背景图默认前缀 bg-；头像请求带 kind=avatar 用 avatar- 前缀。
                 const kind = queryParam(request, 'kind') === 'avatar' ? 'avatar' : 'bg';
@@ -1235,6 +1392,7 @@ export function apply(ctx: HostCtx): void {
               res.end();
               return;
             }
+            if (rejectIfCrossOrigin(req, res)) return;
             try {
               await mkdir(UPLOAD_DIR, { recursive: true });
               const ok = openFolder(UPLOAD_DIR);
@@ -1284,6 +1442,7 @@ export function apply(ctx: HostCtx): void {
                 res.end();
                 return;
               }
+              if (rejectIfCrossOrigin(req, res)) return;
               try {
                 const installed = await syncRoleplayPreset();
                 sendJson(res, 200, { ok: true, installed });
@@ -1302,6 +1461,7 @@ export function apply(ctx: HostCtx): void {
                 res.end();
                 return;
               }
+              if (rejectIfCrossOrigin(req, res)) return;
               try {
                 // 生效状态先按当前配置落盘一次，未生效时只建目录，保证打开的目录一定存在。
                 const config = await readConfig();
@@ -1346,6 +1506,7 @@ export function apply(ctx: HostCtx): void {
         res.end();
         return;
       }
+      if (rejectIfCrossOrigin(req, res)) return;
       try {
         const body = await readJsonBody(req);
         const name =
@@ -1373,6 +1534,7 @@ export function apply(ctx: HostCtx): void {
         res.end();
         return;
       }
+      if (rejectIfCrossOrigin(req, res)) return;
       try {
         const body = await readJsonBody(req);
         const id = typeof body.id === 'string' ? body.id : '';
@@ -1400,6 +1562,7 @@ export function apply(ctx: HostCtx): void {
         res.end();
         return;
       }
+      if (rejectIfCrossOrigin(req, res)) return;
       try {
         const body = await readJsonBody(req);
         const id = typeof body.id === 'string' ? body.id : '';
@@ -1425,6 +1588,7 @@ export function apply(ctx: HostCtx): void {
         res.end();
         return;
       }
+      if (rejectIfCrossOrigin(req, res)) return;
       try {
         const body = await readJsonBody(req);
         const id = typeof body.id === 'string' ? body.id : '';
@@ -1464,7 +1628,7 @@ export function apply(ctx: HostCtx): void {
         }
         const payload: ThemeExport = {
           framework: 'xiao-theme-ts',
-          version: 1,
+          version: SCHEMA_VERSION,
           name: entry.name,
           config: normalizeConfig(entry.config as unknown as Record<string, unknown>),
         };
@@ -1480,11 +1644,19 @@ export function apply(ctx: HostCtx): void {
         res.end();
         return;
       }
+      if (rejectIfCrossOrigin(req, res)) return;
       try {
         const body = await readJsonBody(req);
         const configRaw = body.config;
         if (configRaw === null || typeof configRaw !== 'object' || Array.isArray(configRaw)) {
           sendJson(res, 400, { error: HOST_ERR.configRequired[langFromReq(req)] });
+          return;
+        }
+        // 导入版本校验：来自更新版本的文件直接拒绝；缺省视为当前版本（兼容旧导出与旧客户端）。
+        const declaredVersion =
+          typeof body.version === 'number' && Number.isFinite(body.version) ? body.version : SCHEMA_VERSION;
+        if (declaredVersion > SCHEMA_VERSION) {
+          sendJson(res, 400, { error: HOST_ERR.themeVersionTooNew[langFromReq(req)] });
           return;
         }
         const store = await readThemeStore();
