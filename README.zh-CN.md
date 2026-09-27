@@ -2,6 +2,8 @@
 
 # xiao-ui-theme-ts
 
+> ✅ **已适配最新桌面版（DSH Desktop，实测 `0.1.7-rc.2`）与 Web 版（实测 `0.1.5-rc.3`）。** 只要 DSH 是 `v0.1.5-alpha.1` 及更新（自带官方右栏的版本）即可；更早的版本请用主题 `0.11.x` —— 见[版本兼容](#版本兼容)。
+
 DeepSeek Harness 的**可自定义主题插件**（默认带一套「魈」青玉风）—— 给 DeepSeek Harness 的
 Web 界面做主题：配色、吉祥物徽章、背景、注入语气都能自己调。背景同时支持**静态图片、动态 GIF 与循环视频（MP4/WebM/MOV/M4V）**——上传动画 GIF 会自动识别为动态背景，上传视频也会自动识别并作为全屏循环背景播放。默认是一套魈的青玉/翠青风格，但主色、徽章文字、语气、
 背景等都可配置，改出来就是你的专属主题。
@@ -15,6 +17,13 @@ Web 界面做主题：配色、吉祥物徽章、背景、注入语气都能自�
 以角色身份聊天的独立 agent 预设，与工作会话刻意分开——工作会话永远只拿语气，不拿角色身份。
 
 ## 示例
+
+<details open>
+<summary><b>桌面版（DSH Desktop，最新版适配）</b></summary>
+
+<img width="1279" height="739" alt="魈主题——桌面版适配示例（徽章里可见声音按钮）" src="./resource/screenShortsReadMe/desktopExample.png" />
+
+</details>
 
 <details open>
 <summary><b>浅色模式（魈，默认）</b></summary>

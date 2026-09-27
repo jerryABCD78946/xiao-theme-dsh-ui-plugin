@@ -2,6 +2,8 @@
 
 # xiao-ui-theme-ts
 
+> ✅ **Adapted to the latest DSH Desktop build (tested on `0.1.7-rc.2`) and the Web build (tested on `0.1.5-rc.3`).** Any DSH `v0.1.5-alpha.1` or newer (a build that ships the official right panel) works; on anything older please use theme `0.11.x` — see [Version compatibility](#version-compatibility).
+
 A **highly customizable theme plugin** for DeepSeek Harness (ships with a "Xiao" jade-green look by default). It themes the DeepSeek Harness web UI: colors, mascot badge, background, and injected voice are all configurable. The background supports **static images, animated GIFs, and looping videos (MP4/WebM/MOV/M4V)** — an uploaded animated GIF is auto-detected and used as a live/dynamic background, and an uploaded video is auto-detected and played as a full-screen looping background. Out of the box it's a Xiao-style jade/emerald theme, but the accent color, badge text, voice, and background are all tweakable — make it your own.
 
 ## What is this
@@ -9,6 +11,13 @@ A **highly customizable theme plugin** for DeepSeek Harness (ships with a "Xiao"
 Gives the DeepSeek Harness web UI a heavily customizable theme. **By default it's the jade-green "Xiao" look** (jade palette + mascot badge + Xiao-style voice + frosted background), but every part is adjustable: accent color, badge text, voice toggle/language/content, background image and transparency. It also optionally injects a "Xiao-style voice" into the session — turn it on if you want the assistant to speak like Xiao, off if not. It only changes tone/style, never the substance of the answer. On top of that it ships a **separate roleplay space** (entertainment): an independent, tool-free agent preset for actually chatting in character, kept deliberately apart from work sessions — a work session only ever gets tone, never a character identity.
 
 ## Preview
+
+<details open>
+<summary><b>Desktop app (DSH Desktop, latest build)</b></summary>
+
+<img width="1279" height="739" alt="Xiao theme — desktop app example (note the sound button inside the mascot badge)" src="./resource/screenShortsReadMe/desktopExample.png" />
+
+</details>
 
 <details open>
 <summary><b>Light mode</b></summary>
