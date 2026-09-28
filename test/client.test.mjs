@@ -115,6 +115,17 @@ test('videoPlaythroughPlan: switch time = max(interval, duration)', () => {
   });
 });
 
+test('bgVolume: 0–1 钳制，缺失 / 非法回默认 1', () => {
+  assert.equal(mod.bgVolume({ backgroundVideoVolume: 0.4 }), 0.4);
+  assert.equal(mod.bgVolume({ backgroundVideoVolume: 0 }), 0);
+  assert.equal(mod.bgVolume({ backgroundVideoVolume: 1 }), 1);
+  assert.equal(mod.bgVolume({ backgroundVideoVolume: 9 }), 1);
+  assert.equal(mod.bgVolume({ backgroundVideoVolume: -1 }), 0);
+  assert.equal(mod.bgVolume({ backgroundVideoVolume: Number.NaN }), 1);
+  assert.equal(mod.bgVolume({}), 1);
+  assert.equal(mod.bgVolume({ backgroundVideoVolume: '0.2' }), 1);
+});
+
 test('backgroundHasVideo: 只有视频背景才显示喇叭按钮', () => {
   const cfg = (over) => ({
     enabled: true,
