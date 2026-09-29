@@ -49,6 +49,9 @@ const CLIENT_RANGES = {
 } as const;
 const PANEL_OPACITY_MAX = 0.9;
 
+/** 内置默认主题名（与 Host 的 DEFAULT_THEME_NAME 一致）：默认主题沿用双语静态标题「魈主题 / Xiao Theme」。 */
+const DEFAULT_THEME_NAME = '魈';
+
 let bgVersion = 0;
 let avatarVersion = 0;
 
@@ -85,6 +88,8 @@ function mascotText(value: string | undefined, field: 'title' | 'subtitle'): str
 /** 设置页 / 主题管理 / 徽章提示的文案字典（跟随 DSH 界面语言）。 */
 const STR: Record<string, { zh: string; en: string }> = {
   themeTitle: { zh: '魈主题', en: 'Xiao Theme' },
+  // 设置页左侧分区标题的后缀：主题名原样 + 语言后缀（英文保留前导空格，与 'Xiao Theme' 风格一致）。
+  themeTitleSuffix: { zh: '主题', en: ' Theme' },
   enableTheme: { zh: '启用魈主题', en: 'Enable Xiao theme' },
   themeColor: { zh: '主题颜色', en: 'Theme color' },
   voiceSection: { zh: '语气（工作会话）', en: 'Voice (work sessions)' },
@@ -572,6 +577,56 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
 async function listThemes(): Promise<ThemeListResponse> {
   return fetchJson<ThemeListResponse>('/xiao-theme/themes', { cache: 'no-store' });
 }
+
+/**
+ * 当前活动主题名（设置页左侧分区标题用）。
+ * 主题切换 / 重命名 / 删除后由设置页的 refresh 写入，订阅者据此重注册 settings.section 更新标题。
+ * 主题名以用户实际命名为准，**不做翻译**；只有「主题」/「 Theme」后缀随界面语言变化。
+ */
+let activeThemeName = '';
+const activeThemeNameListeners = new Set<() => void>();
+
+function setActiveThemeName(next: string): void {
+  if (next === activeThemeName) return;
+  activeThemeName = next;
+  for (const listener of [...activeThemeNameListeners]) {
+    try {
+      listener();
+    } catch (error) {
+      console.error('[xiao-theme] active theme name listener failed:', error);
+    }
+  }
+}
+
+/** 从 Host 拉取当前活动主题名（失败保持原值）；插件启动时调用一次，补上设置页打开前的标题。 */
+async function refreshActiveThemeName(): Promise<void> {
+  try {
+    const res = await listThemes();
+    const active = res.themes.find((item) => item.id === res.activeThemeId);
+    setActiveThemeName(active ? active.name : '');
+  } catch (error) {
+    console.error('[xiao-theme] load active theme name failed:', error);
+  }
+}
+
+/**
+ * 设置页左侧分区标题：{主题名} + 语言后缀。主题名原样使用（用户给「爱情」，英文界面也是「爱情」），
+ * 后缀随界面语言：中文「主题」、英文「 Theme」。尚未取到主题名、或仍是内置默认主题「魈」时，
+ * 沿用双语静态标题（「魈主题」/「Xiao Theme」），避免默认主题在英文界面被拼成「魈 Theme」。
+ */
+function composeThemeTitle(name: string, lang: 'zh' | 'en' | ''): string {
+  const trimmed = typeof name === 'string' ? name.trim() : '';
+  // 尚未取到主题名，或仍是内置默认主题「魈」：沿用双语静态标题，而不是「魈 Theme」。
+  if (trimmed.length === 0 || trimmed === DEFAULT_THEME_NAME) {
+    if (lang === 'zh') return STR.themeTitle!.zh;
+    if (lang === 'en') return STR.themeTitle!.en;
+    return t('themeTitle');
+  }
+  const suffix =
+    lang === 'zh' ? STR.themeTitleSuffix!.zh : lang === 'en' ? STR.themeTitleSuffix!.en : t('themeTitleSuffix');
+  return trimmed + suffix;
+}
+
 async function createTheme(name: string): Promise<ThemeSummary> {
   return fetchJson<ThemeSummary>('/xiao-theme/themes', {
     method: 'POST',
@@ -1903,6 +1958,9 @@ function ThemeManager({ store }: { store: ConfigStore }): React.ReactElement {
       const res = await listThemes();
       setThemes(res.themes);
       setActiveId(res.activeThemeId);
+      // 同步给设置页左侧分区标题：主题切换 / 重命名 / 删除后标题立刻变成新主题名。
+      const active = res.themes.find((item) => item.id === res.activeThemeId);
+      setActiveThemeName(active ? active.name : '');
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -3423,15 +3481,14 @@ function apply(ctx: ClientCtx): void {
       React.createElement(XiaoOverlay, { store }),
     ),
   );
-  // settings.section 标题需跟随 DSH 界面语言：用 slots.inject 声明该 slot（必须，否则 DSH 会报“slot 未声明”崩溃），
-  // 并在语言变化（<html lang> 更新）时 dispose 旧 inject + 重 inject 以更新 label。
+  // settings.section 标题需跟随 DSH 界面语言与当前主题名：用 slots.inject 声明该 slot（必须，否则 DSH 会报“slot 未声明”崩溃），
+  // 并在语言变化（<html lang> 更新）或活动主题名变化时 dispose 旧 inject + 重 inject 以更新 label。
   const localeSvc = ctx.get('locale');
   let settingsInject: (() => void) | null = null;
   const sectionLabel = (): string => {
     const active = localeSvc ? localeSvc.getLocale().active : '';
-    if (active === 'zh') return STR.themeTitle!.zh;
-    if (active === 'en') return STR.themeTitle!.en;
-    return t('themeTitle');
+    const lang: 'zh' | 'en' | '' = active === 'zh' ? 'zh' : active === 'en' ? 'en' : '';
+    return composeThemeTitle(activeThemeName, lang);
   };
   const registerSettings = (): void => {
     try {
@@ -3452,13 +3509,19 @@ function apply(ctx: ClientCtx): void {
   // 语言变化（DSH 更新 <html lang>）时重注册；覆盖初始时序（lang 尚未设置）与后续切换。
   const langObserver = new MutationObserver(() => registerSettings());
   langObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['lang'] });
+  // 分区标题还要跟随「当前主题名」：主题切换 / 重命名后重注册，标题即变成「<主题名>主题 / <name> Theme」。
+  const onActiveThemeNameChange = (): void => registerSettings();
+  activeThemeNameListeners.add(onActiveThemeNameChange);
   registerSettings();
+  // 先按内置静态标题渲染（避免空白），随后取到活动主题名再刷新一次。
+  void refreshActiveThemeName();
   ctx.effect(
     () => () => {
       langObserver.disconnect();
+      activeThemeNameListeners.delete(onActiveThemeNameChange);
       if (settingsInject !== null) settingsInject();
     },
-    'xiao-theme: settings section locale sync',
+    'xiao-theme: settings section title sync',
   );
 }
 
@@ -3475,5 +3538,6 @@ export {
   deriveSurfaces,
   buildPalette,
   mascotText,
+  composeThemeTitle,
 };
 export default { inject, apply } satisfies ClientPlugin;
